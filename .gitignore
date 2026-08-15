@@ -1,0 +1,17 @@
+# OS
+.DS_Store
+
+# rust
+target/
+
+# node / typescript
+node_modules/
+
+# python
+__pycache__/
+.venv/
+.pytest_cache/
+
+# editors
+.idea/
+.vscode/

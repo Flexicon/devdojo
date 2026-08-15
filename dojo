@@ -1,0 +1,143 @@
+#!/usr/bin/env node
+// dojo — devdojo monorepo control.
+
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+
+const ROOT = path.dirname(fs.realpathSync(__filename));
+
+function usage() {
+  console.log(`usage:
+  dojo bout                      run every topic's tests + summary
+  dojo bout <topic>              run one topic's tests
+  dojo bout <topic> <problem>    run one problem (p1, p0001, p0001-two-sum)`);
+}
+
+function parseFrontmatter(file) {
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+  if (lines[0] !== '---') return {};
+
+  const values = {};
+  for (const line of lines.slice(1)) {
+    if (line === '---') break;
+    const separator = line.indexOf(':');
+    if (separator === -1) continue;
+    const key = line.slice(0, separator).trim();
+    values[key] = line.slice(separator + 1).trim();
+  }
+  return values;
+}
+
+function topicNames() {
+  return fs.readdirSync(ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(ROOT, entry.name, 'TOPIC.md')))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+function normalizeProblem(value) {
+  const match = /^p(\d+)(?:[-_].*)?$/i.exec(value);
+  if (!match) {
+    throw new Error(`problem must look like p1, p0001, or p0001-name: ${value}`);
+  }
+  return `p${match[1].padStart(4, '0')}`;
+}
+
+function globMatches(topicDir, pattern) {
+  const star = pattern.indexOf('*');
+  if (star === -1) return fs.existsSync(path.join(topicDir, pattern));
+
+  const directory = path.join(topicDir, path.dirname(pattern.slice(0, star)));
+  if (!fs.existsSync(directory)) return false;
+
+  const relativePattern = path.basename(pattern);
+  const expression = new RegExp(`^${relativePattern
+    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '.*')}$`);
+  return fs.readdirSync(directory, { withFileTypes: true })
+    .some((entry) => expression.test(entry.name));
+}
+
+function commandFor(template, problem) {
+  return template.replaceAll('{problem}', problem || '');
+}
+
+function runTopic(name, problem) {
+  const topicDir = path.join(ROOT, name);
+  const config = parseFrontmatter(path.join(topicDir, 'TOPIC.md'));
+  const template = problem ? config.test_one : config.test_all;
+
+  if (!template) {
+    console.log(`== ${name} == (no ${problem ? 'test_one' : 'test_all'} configured — skipped)`);
+    return null;
+  }
+
+  if (problem && config.problem_glob && !globMatches(topicDir, commandFor(config.problem_glob, problem))) {
+    console.error(`no problem matching '${problem}' in ${name}`);
+    return 2;
+  }
+
+  const result = spawnSync(commandFor(template, problem), {
+    cwd: topicDir,
+    shell: true,
+    stdio: 'inherit',
+  });
+  return result.status ?? 1;
+}
+
+function bout(topic, problem) {
+  const normalized = problem ? normalizeProblem(problem) : '';
+
+  if (topic) {
+    const name = topic.replace(/\/$/, '');
+    if (!topicNames().includes(name)) {
+      console.error(`no topic '${name}' (topics: ${topicNames().join(' ')})`);
+      return 2;
+    }
+    const status = runTopic(name, normalized);
+    return status === null ? 2 : status;
+  }
+
+  const failed = [];
+  let ran = 0;
+  for (const name of topicNames()) {
+    console.log(`== ${name} ==`);
+    const status = runTopic(name, '');
+    if (status === null) continue;
+    ran += 1;
+    if (status !== 0) failed.push(name);
+    console.log();
+  }
+
+  if (ran === 0) {
+    console.error('no runnable topics found');
+    return 2;
+  }
+  if (failed.length > 0) {
+    console.log(`failing: ${failed.join(' ')}`);
+    return 1;
+  }
+  console.log(`all ${ran} topic(s) passing`);
+  return 0;
+}
+
+const [command, topic, problem] = process.argv.slice(2);
+let status = 0;
+
+if (command === 'bout') {
+  try {
+    status = bout(topic, problem);
+  } catch (error) {
+    console.error(error.message);
+    status = 2;
+  }
+} else if (!command || command === 'help' || command === '-h' || command === '--help') {
+  usage();
+} else {
+  console.error(`unknown command: ${command}`);
+  usage();
+  status = 2;
+}
+
+process.exitCode = status;
